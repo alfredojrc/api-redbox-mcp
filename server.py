@@ -13,6 +13,7 @@ import ipaddress
 import subprocess
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -34,6 +35,19 @@ WORDLISTS: dict[str, str] = {
 NUCLEI_TEMPLATE_DIR = "/opt/nuclei-templates"
 
 DEFAULT_TIMEOUT = 300  # seconds; every scan is bounded so a hung tool can't pin us
+
+# Hardcoded target allowlist — the application-layer companion to the egress
+# firewall. Every tool refuses any target not covered here, so even a hijacked
+# or hallucinating LLM cannot point these tools at the public internet or at a
+# host outside the engagement. Entries may be single IPs or CIDR ranges.
+#
+# This is deliberately a baked-in constant, NOT an env var or a mounted file —
+# both of those could be overridden at `docker run`. With the read-only rootfs,
+# the only way to change the allowed targets is to edit this list and rebuild.
+ALLOWED_TARGETS: tuple[str, ...] = (
+    "192.168.68.100",  # add more IPs or CIDR ranges here, e.g. "192.168.68.0/24"
+)
+_ALLOWED_NETWORKS = [ipaddress.ip_network(t, strict=False) for t in ALLOWED_TARGETS]
 
 mcp = FastMCP(
     "api-redbox-mcp",
@@ -77,8 +91,16 @@ def run_binary(cmd: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
 
 
 def _validate_target_ip(value: str) -> str:
-    """Reject anything that is not a literal IP address (no hostnames, no payloads)."""
-    ipaddress.ip_address(value)  # raises ValueError -> surfaced to the model as a tool error
+    """Reject anything that is not a literal IP address on the hardcoded allowlist.
+
+    Two gates: the value must parse as a literal IP (no hostnames, no payloads),
+    and it must fall inside ALLOWED_TARGETS. The allowlist is the application-layer
+    twin of the egress firewall — even a hijacked LLM cannot aim a tool at a host
+    we did not pre-approve.
+    """
+    ip = ipaddress.ip_address(value)  # ValueError -> surfaced to the model as a tool error
+    if not any(ip in net for net in _ALLOWED_NETWORKS):
+        raise ValueError(f"target '{value}' is not in the allowed scan list")
     return value
 
 
@@ -88,9 +110,18 @@ def _resolve_wordlist(alias: str) -> str:
 
 
 def _validate_http_url(value: str) -> str:
-    """Require a well-formed http(s) URL; reject anything else."""
+    """Require a well-formed http(s) URL whose host is an allowed literal IP.
+
+    The host is never resolved (resolving would reopen the DNS-exfiltration
+    channel the sandbox closes); it must already be a literal IP, and it is run
+    through the same allowlist as _validate_target_ip.
+    """
     if not value.startswith(("http://", "https://")):
         raise ValueError("url must start with http:// or https://")
+    host = urlparse(value).hostname
+    if not host:
+        raise ValueError("url has no host")
+    _validate_target_ip(host)  # literal IP + allowlist membership
     return value
 
 
@@ -108,10 +139,18 @@ def nmap_scan(
     ] = "1-1000",
     scan_type: Literal["-sT", "-sV"] = "-sT",
 ) -> str:
-    """Verify open ports on a single host. Uses an unprivileged TCP connect scan
-    (`-sT -Pn`) so the container needs no elevated capabilities."""
+    """Verify open ports on a single host.
+
+    Always an unprivileged TCP connect scan (`-sT -Pn`), so the container needs
+    no elevated capabilities. `scan_type="-sV"` *adds* service/version detection
+    on top of the connect scan — it never replaces it, because a bare `-sV` would
+    let nmap fall back to a SYN scan that needs a raw socket the sandbox denies.
+    """
     _validate_target_ip(target)
-    return run_binary(["nmap", "-Pn", scan_type, "-p", ports, target])
+    cmd = ["nmap", "-Pn", "-sT", "-p", ports, target]
+    if scan_type == "-sV":
+        cmd.insert(3, "-sV")  # -> nmap -Pn -sT -sV -p <ports> <target>
+    return run_binary(cmd)
 
 
 @mcp.tool()
