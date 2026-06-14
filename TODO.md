@@ -30,10 +30,18 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 - [x] Per-tool timeouts — `TIMEOUTS` in `server.py` (nmap/nuclei 900s, ffuf/arjun 600s)
       replace the single 300s default; a 3-port `-sV` scan alone took ~198s.
 - [x] CI: `.github/workflows/ci.yml` runs `py_compile` + `ruff check` (incl. bandit S rules)
-      + `pytest` on push/PR.
+      + `pytest`, plus a job that builds the Docker image and verifies nuclei works under the
+      hardened runtime, on push/PR.
 - [x] Decided: `nmap -sS` (SYN) NOT needed — connect scan (`-sT`) covers our needs without
       capabilities; SYN would require `--cap-add NET_RAW` and weaken the hardening.
 - [x] Structured output: tools return `ScanResult` (status/exit_code/findings/raw); findings
       parsed from native machine formats (nmap XML, ffuf/arjun JSON, nuclei JSONL), defensively.
       nmap path validated live; ffuf/arjun/nuclei parsers fixture-tested (no live HTTP target here).
+- [x] Fix nuclei in the image (found while scanning a live target): templates weren't baked
+      (`|| true` hid the failure), shipped mode-700 (unreadable by UID 1000), and the read-only
+      rootfs blocked nuclei's config dir. Now `XDG_CONFIG_HOME=/tmp/.config`, templates made
+      world-readable, build fails on empty templates, and CI builds + runs the image.
+- [ ] nuclei is hardwired to `-tags rest,api` — a tiny slice of the ~13k templates, so it is
+      not a vuln assessment (won't catch CVEs, exposed Redis/Postgres/Grafana, default creds).
+      Consider an allowlisted set of tag presets for broader coverage.
 - [ ] Treat all tool *output* as untrusted (prompt-injection from target API responses)

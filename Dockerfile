@@ -15,7 +15,10 @@ RUN git clone --depth 1 --filter=blob:none --sparse \
 FROM kalilinux/kali-rolling
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/home/mcpbot \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    XDG_CONFIG_HOME=/tmp/.config
+# nuclei/uncover insist on writing a config dir under XDG_CONFIG_HOME. Point it at
+# /tmp, which is a writable tmpfs at runtime, so they work under the read-only rootfs.
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -25,7 +28,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Bake nuclei templates at build time so the read-only runtime never needs to update them.
-RUN nuclei -update-templates -update-template-dir /opt/nuclei-templates -disable-update-check || true
+# Fail the build (no `|| true`) if the download produced no templates — shipping an
+# empty template dir silently broke nuclei before.
+RUN nuclei -update-templates -update-template-dir /opt/nuclei-templates \
+ && test -n "$(find /opt/nuclei-templates -name '*.yaml' -print -quit)"
+# nuclei creates the template dir mode 700 root:root; the runtime user (UID 1000)
+# must be able to read it under the read-only rootfs.
+RUN chmod -R a+rX /opt/nuclei-templates
 
 COPY --from=wordlists /opt/seclists /opt/seclists
 
