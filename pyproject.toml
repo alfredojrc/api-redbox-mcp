@@ -1,0 +1,10 @@
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# This is a security tool, so run flake8-bandit (S) on top of ruff's defaults.
+extend-select = ["S"]
+
+[tool.ruff.lint.per-file-ignores]
+# asserts are the normal idiom in pytest
+"test_server.py" = ["S101"]

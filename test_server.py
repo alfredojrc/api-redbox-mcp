@@ -163,6 +163,31 @@ class TestWordlistResolution:
 
 
 # ---------------------------------------------------------------------------
+# Execution primitive — no shell, bounded by a timeout
+# ---------------------------------------------------------------------------
+
+
+class TestRunBinary:
+    def test_runs_without_shell_and_passes_timeout(self):
+        import subprocess as sp
+
+        completed = sp.CompletedProcess(args=["nmap"], returncode=0, stdout="ok", stderr="")
+        with patch.object(server.subprocess, "run", return_value=completed) as run:
+            assert server.run_binary(["nmap", "-Pn"], timeout=123) == "ok"
+        assert run.call_args.kwargs["shell"] is False
+        assert run.call_args.kwargs["timeout"] == 123
+
+    def test_timeout_is_reported_not_raised(self):
+        import subprocess as sp
+
+        with patch.object(
+            server.subprocess, "run", side_effect=sp.TimeoutExpired(cmd="nmap", timeout=5)
+        ):
+            out = server.run_binary(["nmap"], timeout=5)
+        assert "timed out" in out
+
+
+# ---------------------------------------------------------------------------
 # Handler layer — each tool builds an exact argv list (no command string)
 # ---------------------------------------------------------------------------
 
@@ -171,7 +196,10 @@ class TestToolArgvConstruction:
     def test_nmap_builds_expected_argv(self):
         with patch.object(server, "run_binary", return_value="OK") as rb:
             assert server.nmap_scan(ALLOWED) == "OK"
-        rb.assert_called_once_with(["nmap", "-Pn", "-sT", "-p", "1-1000", ALLOWED])
+        rb.assert_called_once_with(
+            ["nmap", "-Pn", "-sT", "-p", "1-1000", ALLOWED],
+            timeout=server.TIMEOUTS["nmap"],
+        )
 
     def test_nmap_version_detection_is_additive_over_connect_scan(self):
         # -sV must never replace -sT: a bare -sV lets nmap fall back to a SYN
@@ -179,7 +207,8 @@ class TestToolArgvConstruction:
         with patch.object(server, "run_binary", return_value="OK") as rb:
             server.nmap_scan(ALLOWED, ports="80,443", scan_type="-sV")
         rb.assert_called_once_with(
-            ["nmap", "-Pn", "-sT", "-sV", "-p", "80,443", ALLOWED]
+            ["nmap", "-Pn", "-sT", "-sV", "-p", "80,443", ALLOWED],
+            timeout=server.TIMEOUTS["nmap"],
         )
 
     def test_nmap_rejects_hostname_before_exec(self):
@@ -205,7 +234,8 @@ class TestToolArgvConstruction:
                 "-w",
                 server._resolve_wordlist("common"),
                 "-noninteractive",
-            ]
+            ],
+            timeout=server.TIMEOUTS["ffuf"],
         )
 
     def test_ffuf_requires_fuzz_keyword(self):
@@ -224,7 +254,8 @@ class TestToolArgvConstruction:
         with patch.object(server, "run_binary", return_value="OK") as rb:
             server.arjun_params("http://192.168.68.100/api", method="POST")
         rb.assert_called_once_with(
-            ["arjun", "-u", "http://192.168.68.100/api", "-m", "POST"]
+            ["arjun", "-u", "http://192.168.68.100/api", "-m", "POST"],
+            timeout=server.TIMEOUTS["arjun"],
         )
 
     def test_arjun_rejects_non_http(self):
@@ -252,7 +283,8 @@ class TestToolArgvConstruction:
                 "-templates",
                 server.NUCLEI_TEMPLATE_DIR,
                 "-disable-update-check",
-            ]
+            ],
+            timeout=server.TIMEOUTS["nuclei"],
         )
 
     def test_nuclei_rejects_non_http(self):

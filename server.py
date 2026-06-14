@@ -34,7 +34,17 @@ WORDLISTS: dict[str, str] = {
 # nuclei templates are baked into the image at build time (read-only rootfs).
 NUCLEI_TEMPLATE_DIR = "/opt/nuclei-templates"
 
-DEFAULT_TIMEOUT = 300  # seconds; every scan is bounded so a hung tool can't pin us
+DEFAULT_TIMEOUT = 300  # seconds; fallback bound so a hung tool can't pin us
+
+# Per-tool execution timeouts (seconds). Version/vuln scans are much slower than
+# the discovery tools — a 3-port nmap `-sV` already took ~200s in testing — so
+# they get more headroom; all are still bounded.
+TIMEOUTS: dict[str, int] = {
+    "nmap": 900,
+    "ffuf": 600,
+    "arjun": 600,
+    "nuclei": 900,
+}
 
 # Hardcoded target allowlist — the application-layer companion to the egress
 # firewall. Every tool refuses any target not covered here, so even a hijacked
@@ -150,7 +160,7 @@ def nmap_scan(
     cmd = ["nmap", "-Pn", "-sT", "-p", ports, target]
     if scan_type == "-sV":
         cmd.insert(3, "-sV")  # -> nmap -Pn -sT -sV -p <ports> <target>
-    return run_binary(cmd)
+    return run_binary(cmd, timeout=TIMEOUTS["nmap"])
 
 
 @mcp.tool()
@@ -163,7 +173,8 @@ def ffuf_discover(
     if "FUZZ" not in url:
         raise ValueError("url must contain the FUZZ keyword")
     return run_binary(
-        ["ffuf", "-u", url, "-w", _resolve_wordlist(wordlist), "-noninteractive"]
+        ["ffuf", "-u", url, "-w", _resolve_wordlist(wordlist), "-noninteractive"],
+        timeout=TIMEOUTS["ffuf"],
     )
 
 
@@ -174,7 +185,7 @@ def arjun_params(
 ) -> str:
     """Fuzz a URL for hidden HTTP parameters."""
     _validate_http_url(url)
-    return run_binary(["arjun", "-u", url, "-m", method])
+    return run_binary(["arjun", "-u", url, "-m", method], timeout=TIMEOUTS["arjun"])
 
 
 @mcp.tool()
@@ -193,7 +204,8 @@ def nuclei_scan(
             "-templates",
             NUCLEI_TEMPLATE_DIR,
             "-disable-update-check",
-        ]
+        ],
+        timeout=TIMEOUTS["nuclei"],
     )
 
 

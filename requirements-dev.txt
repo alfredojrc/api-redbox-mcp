@@ -1,0 +1,3 @@
+# Dev/CI-only tooling (kept out of the runtime image).
+pytest
+ruff

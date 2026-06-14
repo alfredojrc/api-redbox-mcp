@@ -19,16 +19,19 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 - [x] Hardcoded target allowlist (`ALLOWED_TARGETS` in `server.py`) — seeded with
       `192.168.68.100`; every tool refuses off-list IPs and URL hosts (hostnames never
       resolved). Verified live in the baked image. App-layer twin of the egress firewall.
-- [ ] `setup-egress.sh` — parameterized host `DOCKER-USER` iptables rules (subnet + target CIDR),
-      ideally derived from the same allowlist so the two layers can't drift.
-- [ ] Pin the internal DNS resolver / confirm `--add-host` + no-DNS approach for the target
+- [x] `setup-egress.sh` — default-deny host `DOCKER-USER` iptables rules; reads target CIDRs
+      from `server.py` (no drift), v4/v6, idempotent, `--dry-run`. Linux Docker host only.
+- [x] DNS resolver: blocked by default in `setup-egress.sh` (allow one via `--dns-resolver`);
+      with `--dns 0.0.0.0` + `--add-host` at runtime this closes the DNS-tunnel path.
 - [ ] Optional: allowed-hostname set for the `--add-host` workflow (exact-match, still no
       runtime DNS), if scanning by name is ever needed. IP/CIDR-only for now.
 
 ## Hardening / later
-- [ ] Per-tool timeouts — a 3-port `-sV` smoke scan took ~198s; the single 300s default
-      in `run_binary` gives little headroom for a real multi-port version scan.
+- [x] Per-tool timeouts — `TIMEOUTS` in `server.py` (nmap/nuclei 900s, ffuf/arjun 600s)
+      replace the single 300s default; a 3-port `-sV` scan alone took ~198s.
+- [x] CI: `.github/workflows/ci.yml` runs `py_compile` + `ruff check` (incl. bandit S rules)
+      + `pytest` on push/PR.
+- [x] Decided: `nmap -sS` (SYN) NOT needed — connect scan (`-sT`) covers our needs without
+      capabilities; SYN would require `--cap-add NET_RAW` and weaken the hardening.
 - [ ] Structured output (JSON) from tools instead of raw stdout, for cleaner LLM parsing
-- [ ] Decide if `nmap -sS` (SYN) is ever needed → would require `--cap-add NET_RAW`
-- [ ] CI: lint + `py_compile` + tests on push
 - [ ] Treat all tool *output* as untrusted (prompt-injection from target API responses)
