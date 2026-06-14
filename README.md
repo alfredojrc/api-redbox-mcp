@@ -143,9 +143,16 @@ sudo ./setup-egress.sh --network target_vlan --down                # remove
 
 The sandbox subnet may then reach only the allowlisted targets (plus established
 replies, and DNS to an explicit resolver if given); everything else is logged
-and dropped. Requires a Linux Docker host with `iptables` (not Docker Desktop on
-macOS/Windows). DNS is otherwise blocked, which together with `--dns 0.0.0.0` and
+and dropped. DNS is otherwise blocked, which together with `--dns 0.0.0.0` and
 `--add-host` closes the DNS-tunnel exfiltration path.
+
+> **Host requirement.** `setup-egress.sh` edits the **host's** netfilter, so it
+> needs a Linux Docker host with `iptables`/`DOCKER-USER`. On Docker Desktop
+> (macOS/Windows) the container itself runs fine, but there is no host `iptables`
+> — the bridge's netfilter lives inside the LinuxKit VM — so the script can't be
+> run from the host. Use `--dry-run` to review the rules anywhere; apply them on
+> the Linux deployment host. The application-layer `ALLOWED_TARGETS` check in
+> `server.py` enforces the same restriction regardless of platform.
 
 ## Use from Claude Code (on-demand)
 
