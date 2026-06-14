@@ -9,10 +9,10 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 - [x] `requirements.txt`, hardened `docker run` flags in `README.md`
 
 ## Next up
-- [ ] `docker build -t api-redbox-mcp .` and fix any build errors
-      (watch the `nuclei -update-templates` flag names — they drift across versions)
+- [x] `docker build -t api-redbox-mcp .` and fix any build errors — image builds clean (~1.5GB)
+- [x] `test_server.py` — 48 tests; allowlists reject bad input at schema + handler layers (binaries mocked).
+      Run: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/python -m pytest`
 - [ ] Smoke test: connect an MCP client to `http://127.0.0.1:8000/mcp`, list tools, run one scan
-- [ ] `test_server.py` — unit tests that allowlists reject bad input (binaries mocked)
 - [ ] `setup-egress.sh` — parameterized host `DOCKER-USER` iptables rules (subnet + target CIDR)
 - [ ] Pin the internal DNS resolver / confirm `--add-host` + no-DNS approach for the target
 
