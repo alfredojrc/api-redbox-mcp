@@ -24,5 +24,6 @@ The MCP server must NOT expose arbitrary shell execution (`/bin/sh -c`). It must
 
 ## 4. Network Constraints
 - **Egress:** Iptables/Docker network rules must restrict egress strictly to the target REST API IP range.
-- **Ingress:** Only port 8000 (MCP Server Sent Events) exposed to the Host.
+- **Ingress:** Only port 8000 (MCP Streamable HTTP, `/mcp`) exposed to the Host.
 - **DNS:** Hardcoded to an internal resolver to prevent DNS tunneling exfiltration.
+- **Target allowlist (application layer):** Every tool validates its target against a hardcoded allowlist (`ALLOWED_TARGETS` in `server.py`) of permitted IPs/CIDR ranges before executing. URL hosts must be literal allowed IPs and are **never resolved** (resolving would reopen the DNS-exfiltration channel). This is the in-process twin of the egress firewall — defence in depth so a hijacked or hallucinating LLM cannot point a tool at the public internet or a host outside the engagement, even before/independently of the firewall. The list is baked into the read-only image; changing it requires editing the constant and rebuilding.

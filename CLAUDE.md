@@ -33,6 +33,8 @@ See `README.md` for the full hardened `docker run` invocation.
 
 - Built on the official `mcp` SDK's `FastMCP`; tools are plain functions decorated with `@mcp.tool()`. FastMCP auto-derives the JSON schema from type hints and validates arguments before the handler runs.
 - **Every tool's args are a closed allowlist**: `Literal[...]` for flags/wordlists, regex-`pattern` for ports, `_validate_target_ip` (must be a literal IP) and `_validate_http_url` for targets. There is no free-form flag field — adding one is a spec violation (`SPECS.md` §3).
+- **Targets are restricted to a hardcoded allowlist** (`ALLOWED_TARGETS` in `server.py`, IPs/CIDRs). `_validate_target_ip` enforces membership; `_validate_http_url` requires the URL host to be a literal allowed IP and never resolves hostnames. It is the app-layer twin of the egress firewall — do not weaken it to an env var or mounted file (both overridable at `docker run`).
+- **nmap is always a connect scan** (`-sT`): `-sV` is *additive* (`-sT -sV`), never a replacement — a bare `-sV` lets nmap fall back to a SYN scan needing a raw socket the cap-dropped sandbox denies.
 - **`run_binary(cmd: list[str])` is the only execution path**: `subprocess.run` with `shell=False` and a mandatory timeout. Always invoke via an argument list, never a string.
 - Wordlists are selected by **alias** (`WORDLISTS` dict → `/opt/seclists/...`), never by caller-supplied path.
 - nuclei templates are baked into the image (`/opt/nuclei-templates`) and run with `-disable-update-check` because the runtime rootfs is read-only.
@@ -49,6 +51,7 @@ These are the reason the project exists. Treat them as invariants — do not rel
   - `ffuf` — `-u`, `-w` (local SecLists only)
   - `arjun` — `-u`, `-m` (GET/POST)
   - `nuclei` — `-u`, `-tags rest,api`
+- **Target allowlist (application layer):** every tool refuses any target — or any URL host — not in the hardcoded `ALLOWED_TARGETS` (`server.py`). Baked into the read-only image; URL hosts must be literal allowed IPs (never resolved).
 - **Container hardening:** base `kalilinux/kali-rolling`; run as `mcpbot` (UID 1000), root disabled; read-only root filesystem; ephemeral `tmpfs` at `/tmp` for tool output.
 - **Network:** egress restricted (iptables / Docker network) to the target API IP range only; ingress limited to port 8000; DNS hardcoded to an internal resolver to block DNS-tunneling exfiltration.
 

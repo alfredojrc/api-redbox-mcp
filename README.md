@@ -36,7 +36,7 @@ flowchart LR
     end
 
     EG{{"egress filter<br/>DOCKER-USER iptables · target CIDR only · DNS pinned"}}
-    API[("Target REST API")]
+    API[("Allowlisted target<br/>e.g. 192.168.68.100")]
 
     MC ==>|"4 typed tools only - no shell"| SRV
     T1 --> EG
@@ -73,11 +73,33 @@ These are the reason the project exists; they are not relaxed for convenience.
   rejects out-of-allowlist values before handler code runs; the handlers then
   re-validate targets (`_validate_target_ip`, `_validate_http_url`) and select
   wordlists by alias only.
+- **Hardcoded target allowlist.** Every tool refuses any target not in
+  `ALLOWED_TARGETS` (IPs/CIDR ranges baked into `server.py`); URL hosts must be
+  literal allowed IPs and are never resolved. This is the application-layer twin
+  of the egress firewall — see [Allowed targets](#allowed-targets).
 - **Container hardening.** Base `kalilinux/kali-rolling`; runs as `mcpbot` (UID 1000),
   root disabled; read-only root filesystem; ephemeral `tmpfs` at `/tmp`.
 - **Network confinement.** Egress restricted to the target API's IP range; ingress
   limited to port 8000; DNS pinned to an internal resolver to block DNS-tunnel
   exfiltration.
+
+## Allowed targets
+
+Targets are restricted to a hardcoded list in `server.py` — not an env var or a
+mounted file, both of which could be overridden at `docker run`:
+
+```python
+ALLOWED_TARGETS: tuple[str, ...] = (
+    "192.168.68.100",  # add more IPs or CIDR ranges here, e.g. "192.168.68.0/24"
+)
+```
+
+A tool refuses any IP target — or any URL whose host — that is not covered here,
+so the tools cannot be aimed at the public internet or unrelated services. URL
+hosts must be literal allowed IPs (hostnames are never resolved). To change the
+allowed targets, edit this list and **rebuild the image** (the read-only rootfs
+means it cannot be altered at runtime). Pair it with the egress firewall below
+for network-level enforcement of the same restriction.
 
 ## Build
 
