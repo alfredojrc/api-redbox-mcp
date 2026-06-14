@@ -22,6 +22,8 @@ The MCP server must NOT expose arbitrary shell execution (`/bin/sh -c`). It must
 | `arjun` | Parameter fuzzing | `-u`, `-m` (GET/POST) |
 | `nuclei` | Vulnerability scanning | `-u`, `-tags rest,api` |
 
+Each tool returns a structured `ScanResult` (`tool`, `target`, `command`, `status`, `exit_code`, `findings`, `raw`) rather than raw console text. `findings` is parsed from the tool's native machine format (nmap `-oX` XML, ffuf/arjun JSON, nuclei `-jsonl`) defensively — malformed output yields `findings: []` while `raw` is preserved.
+
 ## 4. Network Constraints
 - **Egress:** Iptables/Docker network rules must restrict egress strictly to the target REST API IP range.
 - **Ingress:** Only port 8000 (MCP Streamable HTTP, `/mcp`) exposed to the Host.

@@ -33,5 +33,7 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
       + `pytest` on push/PR.
 - [x] Decided: `nmap -sS` (SYN) NOT needed — connect scan (`-sT`) covers our needs without
       capabilities; SYN would require `--cap-add NET_RAW` and weaken the hardening.
-- [ ] Structured output (JSON) from tools instead of raw stdout, for cleaner LLM parsing
+- [x] Structured output: tools return `ScanResult` (status/exit_code/findings/raw); findings
+      parsed from native machine formats (nmap XML, ffuf/arjun JSON, nuclei JSONL), defensively.
+      nmap path validated live; ffuf/arjun/nuclei parsers fixture-tested (no live HTTP target here).
 - [ ] Treat all tool *output* as untrusted (prompt-injection from target API responses)

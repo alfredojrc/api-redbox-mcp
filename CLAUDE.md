@@ -39,6 +39,7 @@ See `README.md` for the full hardened `docker run` invocation.
 - Wordlists are selected by **alias** (`WORDLISTS` dict → `/opt/seclists/...`), never by caller-supplied path.
 - nuclei templates are baked into the image (`/opt/nuclei-templates`) and run with `-disable-update-check` because the runtime rootfs is read-only.
 - Every tool is bounded by a per-tool timeout (`TIMEOUTS` in `server.py`); `run_binary` enforces it so a hung scan can't pin the server.
+- Tools return a structured `ScanResult` (`status`/`exit_code`/`findings`/`raw`), not raw text. `findings` is parsed from each tool's native machine format (nmap `-oX` XML, ffuf/arjun JSON, nuclei `-jsonl`) by defensive `_parse_*` helpers that yield `[]` on malformed output while keeping `raw`. `run_binary` returns an `Execution`, not a string.
 
 To add a tool: add a `@mcp.tool()` function with typed/`Literal` args, validate any target, and route through `run_binary`. Keep the no-passthrough invariant.
 
