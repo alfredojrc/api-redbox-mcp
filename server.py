@@ -5,18 +5,27 @@ the MCP Streamable HTTP transport. Every tool maps to one binary invoked with an
 explicit argument list and `shell=False`. There is deliberately NO passthrough /
 free-form flag field anywhere — that is the invariant that keeps an arbitrary
 command out of reach of a hallucinating or prompt-injected model (see SPECS.md §3).
+
+Each tool returns a structured `ScanResult` (status + exit code + parsed findings
++ the raw machine output) so the model gets clean, typed data instead of having
+to scrape free-form console text.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
 import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -69,11 +78,39 @@ mcp = FastMCP(
 
 
 # ---------------------------------------------------------------------------
+# Result types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Execution:
+    """Outcome of a single binary invocation (the raw, untyped layer)."""
+
+    command: list[str]
+    returncode: int | None  # None => process never completed (timeout / spawn failure)
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+class ScanResult(BaseModel):
+    """Structured tool output returned to the model."""
+
+    tool: str
+    target: str
+    command: list[str]
+    status: Literal["completed", "timed_out", "error"]
+    exit_code: int | None
+    findings: list[dict] = Field(default_factory=list)
+    raw: str
+
+
+# ---------------------------------------------------------------------------
 # Execution primitive — no shell, ever
 # ---------------------------------------------------------------------------
 
 
-def run_binary(cmd: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
+def run_binary(cmd: list[str], timeout: int = DEFAULT_TIMEOUT) -> Execution:
     """Execute a tool with no shell and a mandatory timeout.
 
     `cmd` is an argument list, so the OS execs the binary directly and shell
@@ -89,15 +126,58 @@ def run_binary(cmd: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return f"[error] {cmd[0]} timed out after {timeout}s"
+        return Execution(cmd, None, "", f"timed out after {timeout}s", timed_out=True)
     except FileNotFoundError:
-        return f"[error] binary not found: {cmd[0]}"
+        return Execution(cmd, None, "", f"binary not found: {cmd[0]}")
 
-    out = (proc.stdout or "").strip()
-    if proc.returncode != 0:
-        err = (proc.stderr or "").strip()
-        out = f"{out}\n[exit {proc.returncode}] {err}".strip()
-    return out or "[no output]"
+    return Execution(cmd, proc.returncode, proc.stdout or "", proc.stderr or "")
+
+
+def _result(
+    tool: str,
+    target: str,
+    exe: Execution,
+    findings: list[dict],
+    raw: str | None = None,
+) -> ScanResult:
+    """Assemble a ScanResult, deriving status from the execution outcome."""
+    if exe.timed_out:
+        status: Literal["completed", "timed_out", "error"] = "timed_out"
+    elif exe.returncode == 0:
+        status = "completed"
+    else:
+        status = "error"
+
+    raw_text = raw if raw is not None else exe.stdout
+    raw_text = (raw_text or exe.stderr or "").strip()
+    return ScanResult(
+        tool=tool,
+        target=target,
+        command=exe.command,
+        status=status,
+        exit_code=exe.returncode,
+        findings=findings,
+        raw=raw_text,
+    )
+
+
+def _read_and_unlink(path: str) -> str:
+    """Read a tool's report file from the tmpfs, then remove it. Best-effort."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
 
 
 def _validate_target_ip(value: str) -> str:
@@ -136,6 +216,101 @@ def _validate_http_url(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Output parsers — defensive: any malformed output yields [] (raw is preserved)
+# ---------------------------------------------------------------------------
+
+
+def _parse_nmap_xml(xml_text: str) -> list[dict]:
+    """Extract ports from nmap `-oX` XML."""
+    try:
+        # Source is our own nmap invocation, not attacker-supplied markup.
+        root = ET.fromstring(xml_text)  # noqa: S314
+    except ET.ParseError:
+        return []
+    findings: list[dict] = []
+    for port in root.findall("./host/ports/port"):
+        state = port.find("state")
+        service = port.find("service")
+        findings.append(
+            {
+                "port": int(port.get("portid", "0")),
+                "protocol": port.get("protocol"),
+                "state": state.get("state") if state is not None else None,
+                "service": service.get("name") if service is not None else None,
+                "product": service.get("product") if service is not None else None,
+                "version": service.get("version") if service is not None else None,
+            }
+        )
+    return findings
+
+
+def _parse_ffuf_json(text: str) -> list[dict]:
+    """Extract matches from an ffuf JSON report."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    findings: list[dict] = []
+    for r in data.get("results", []) or []:
+        findings.append(
+            {
+                "url": r.get("url"),
+                "status": r.get("status"),
+                "length": r.get("length"),
+                "words": r.get("words"),
+                "lines": r.get("lines"),
+            }
+        )
+    return findings
+
+
+def _parse_arjun_json(text: str) -> list[dict]:
+    """Extract discovered parameters from an arjun JSON report."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    findings: list[dict] = []
+    for url, val in data.items():
+        if isinstance(val, list):
+            params = val
+        elif isinstance(val, dict):
+            params = val.get("params", [])
+        else:
+            params = []
+        findings.append({"url": url, "params": params})
+    return findings
+
+
+def _parse_nuclei_jsonl(text: str) -> list[dict]:
+    """Extract findings from nuclei JSONL (one JSON object per line)."""
+    findings: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        info = obj.get("info", {}) or {}
+        findings.append(
+            {
+                "template_id": obj.get("template-id"),
+                "name": info.get("name"),
+                "severity": info.get("severity"),
+                "matched_at": obj.get("matched-at") or obj.get("matched_at"),
+                "type": obj.get("type"),
+            }
+        )
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -148,65 +323,98 @@ def nmap_scan(
         Field(pattern=r"^[0-9,\-]{1,64}$", description="Ports, e.g. '80,443' or '1-1000'"),
     ] = "1-1000",
     scan_type: Literal["-sT", "-sV"] = "-sT",
-) -> str:
+) -> ScanResult:
     """Verify open ports on a single host.
 
     Always an unprivileged TCP connect scan (`-sT -Pn`), so the container needs
     no elevated capabilities. `scan_type="-sV"` *adds* service/version detection
     on top of the connect scan — it never replaces it, because a bare `-sV` would
     let nmap fall back to a SYN scan that needs a raw socket the sandbox denies.
+    Returns the open ports parsed from nmap's XML output.
     """
     _validate_target_ip(target)
-    cmd = ["nmap", "-Pn", "-sT", "-p", ports, target]
+    cmd = ["nmap", "-Pn", "-sT", "-p", ports, "-oX", "-", target]
     if scan_type == "-sV":
-        cmd.insert(3, "-sV")  # -> nmap -Pn -sT -sV -p <ports> <target>
-    return run_binary(cmd, timeout=TIMEOUTS["nmap"])
+        cmd.insert(3, "-sV")  # -> nmap -Pn -sT -sV -p <ports> -oX - <target>
+    exe = run_binary(cmd, timeout=TIMEOUTS["nmap"])
+    return _result("nmap", target, exe, _parse_nmap_xml(exe.stdout))
 
 
 @mcp.tool()
 def ffuf_discover(
     url: Annotated[str, Field(description="Target URL containing the FUZZ keyword")],
     wordlist: Literal["common", "big", "raft-small"] = "common",
-) -> str:
-    """Discover endpoints by fuzzing the FUZZ keyword in the URL against a wordlist."""
+) -> ScanResult:
+    """Discover endpoints by fuzzing the FUZZ keyword in the URL against a wordlist.
+
+    Returns the matched endpoints (url/status/length/words/lines) parsed from
+    ffuf's JSON report.
+    """
     _validate_http_url(url)
     if "FUZZ" not in url:
         raise ValueError("url must contain the FUZZ keyword")
-    return run_binary(
-        ["ffuf", "-u", url, "-w", _resolve_wordlist(wordlist), "-noninteractive"],
-        timeout=TIMEOUTS["ffuf"],
-    )
+    fd, report = tempfile.mkstemp(prefix="ffuf-", suffix=".json")  # tmpfs (/tmp)
+    os.close(fd)
+    cmd = [
+        "ffuf",
+        "-u",
+        url,
+        "-w",
+        _resolve_wordlist(wordlist),
+        "-noninteractive",
+        "-s",
+        "-of",
+        "json",
+        "-o",
+        report,
+    ]
+    exe = run_binary(cmd, timeout=TIMEOUTS["ffuf"])
+    report_text = _read_and_unlink(report)
+    return _result("ffuf", url, exe, _parse_ffuf_json(report_text), raw=report_text)
 
 
 @mcp.tool()
 def arjun_params(
     url: Annotated[str, Field(description="Target URL to fuzz for hidden parameters")],
     method: Literal["GET", "POST"] = "GET",
-) -> str:
-    """Fuzz a URL for hidden HTTP parameters."""
+) -> ScanResult:
+    """Fuzz a URL for hidden HTTP parameters.
+
+    Returns the discovered parameter names parsed from arjun's JSON report.
+    """
     _validate_http_url(url)
-    return run_binary(["arjun", "-u", url, "-m", method], timeout=TIMEOUTS["arjun"])
+    fd, report = tempfile.mkstemp(prefix="arjun-", suffix=".json")  # tmpfs (/tmp)
+    os.close(fd)
+    cmd = ["arjun", "-u", url, "-m", method, "-oJ", report]
+    exe = run_binary(cmd, timeout=TIMEOUTS["arjun"])
+    report_text = _read_and_unlink(report)
+    return _result("arjun", url, exe, _parse_arjun_json(report_text), raw=report_text)
 
 
 @mcp.tool()
 def nuclei_scan(
     url: Annotated[str, Field(description="Target URL to scan")],
-) -> str:
-    """Run REST/API vulnerability templates against a target URL."""
+) -> ScanResult:
+    """Run REST/API vulnerability templates against a target URL.
+
+    Returns the findings (template id / name / severity / matched-at) parsed
+    from nuclei's JSONL output.
+    """
     _validate_http_url(url)
-    return run_binary(
-        [
-            "nuclei",
-            "-u",
-            url,
-            "-tags",
-            "rest,api",
-            "-templates",
-            NUCLEI_TEMPLATE_DIR,
-            "-disable-update-check",
-        ],
-        timeout=TIMEOUTS["nuclei"],
-    )
+    cmd = [
+        "nuclei",
+        "-u",
+        url,
+        "-tags",
+        "rest,api",
+        "-templates",
+        NUCLEI_TEMPLATE_DIR,
+        "-disable-update-check",
+        "-jsonl",
+        "-silent",
+    ]
+    exe = run_binary(cmd, timeout=TIMEOUTS["nuclei"])
+    return _result("nuclei", url, exe, _parse_nuclei_jsonl(exe.stdout))
 
 
 if __name__ == "__main__":

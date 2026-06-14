@@ -62,6 +62,29 @@ there is no free-form flag / command field anywhere (see [`SPECS.md`](SPECS.md) 
 | `arjun_params` | Hidden-parameter fuzzing | target URL, method `GET`\|`POST` |
 | `nuclei_scan` | Vulnerability scanning | target URL, fixed `-tags rest,api` (templates baked into the image) |
 
+## Output
+
+Every tool returns a structured `ScanResult` rather than raw console text, so the
+model gets typed data instead of scraping stdout:
+
+```jsonc
+{
+  "tool": "nmap",
+  "target": "192.168.68.100",
+  "command": ["nmap", "-Pn", "-sT", "-p", "80", "-oX", "-", "192.168.68.100"],
+  "status": "completed",        // completed | timed_out | error
+  "exit_code": 0,
+  "findings": [                  // parsed from the tool's native machine format
+    {"port": 80, "protocol": "tcp", "state": "open", "service": "http", "version": "1.25"}
+  ],
+  "raw": "<nmaprun>…</nmaprun>"  // ground truth, always present
+}
+```
+
+`findings` is parsed from each tool's machine format (nmap XML, ffuf/arjun JSON,
+nuclei JSONL); parsing is defensive — malformed output yields `findings: []` while
+`raw` is preserved, so a tool/version quirk never turns into a crash.
+
 ## Security invariants
 
 These are the reason the project exists; they are not relaxed for convenience.
@@ -191,7 +214,7 @@ mocked — no scans run.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
-.venv/bin/python -m pytest        # 65 tests
+.venv/bin/python -m pytest        # 84 tests
 .venv/bin/ruff check .            # lint (incl. flake8-bandit security rules)
 ```
 
