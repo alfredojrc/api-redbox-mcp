@@ -125,8 +125,27 @@ docker run --rm \
 ```
 
 The MCP server is then reachable at `http://127.0.0.1:8000/mcp` (Streamable HTTP).
-Egress should additionally be restricted to the target API's IP range via a host
-`DOCKER-USER` iptables rule (default-deny the sandbox subnet, allow only the target CIDR).
+
+## Egress firewall
+
+Restrict the sandbox at the **network layer** too, so the host drops any packet
+to a non-target even if something slips past the application allowlist.
+[`setup-egress.sh`](setup-egress.sh) installs default-deny `DOCKER-USER` iptables
+rules on the Linux host, reading the target CIDRs **from `server.py`** so the two
+layers can't drift:
+
+```bash
+sudo ./setup-egress.sh --network target_vlan                       # restrict
+sudo ./setup-egress.sh --network target_vlan --dns-resolver 10.0.0.53  # + allow one resolver
+sudo ./setup-egress.sh --network target_vlan --down                # remove
+./setup-egress.sh --subnet 172.30.0.0/16 --dry-run                 # review rules, no root/docker
+```
+
+The sandbox subnet may then reach only the allowlisted targets (plus established
+replies, and DNS to an explicit resolver if given); everything else is logged
+and dropped. Requires a Linux Docker host with `iptables` (not Docker Desktop on
+macOS/Windows). DNS is otherwise blocked, which together with `--dns 0.0.0.0` and
+`--add-host` closes the DNS-tunnel exfiltration path.
 
 ## Use from Claude Code (on-demand)
 
@@ -164,9 +183,13 @@ Unit tests assert the allowlist/no-passthrough invariants with the real binaries
 mocked — no scans run.
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
-.venv/bin/python -m pytest        # 48 tests
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest        # 65 tests
+.venv/bin/ruff check .            # lint (incl. flake8-bandit security rules)
 ```
+
+CI (`.github/workflows/ci.yml`) runs `py_compile`, `ruff check`, and the tests on
+every push and pull request.
 
 ## Layout
 
@@ -175,7 +198,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 | `server.py` | The MCP server — all four tools, validators, `run_binary` |
 | `test_server.py` | Allowlist / no-passthrough test suite |
 | `Dockerfile` | Multi-stage hardened Kali build |
+| `setup-egress.sh` | Host `DOCKER-USER` iptables egress lockdown (reads the allowlist from `server.py`) |
 | `redbox.mcp.json` | Claude Code MCP connection for `claudered` |
+| `pyproject.toml` | Ruff lint config (security rules enabled) |
+| `requirements-dev.txt` | Dev/CI tooling (pytest, ruff) — kept out of the image |
 | `SPECS.md` | Authoritative design contract |
 | `TODO.md` | Status and remaining work |
-</content>

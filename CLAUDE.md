@@ -38,6 +38,7 @@ See `README.md` for the full hardened `docker run` invocation.
 - **`run_binary(cmd: list[str])` is the only execution path**: `subprocess.run` with `shell=False` and a mandatory timeout. Always invoke via an argument list, never a string.
 - Wordlists are selected by **alias** (`WORDLISTS` dict → `/opt/seclists/...`), never by caller-supplied path.
 - nuclei templates are baked into the image (`/opt/nuclei-templates`) and run with `-disable-update-check` because the runtime rootfs is read-only.
+- Every tool is bounded by a per-tool timeout (`TIMEOUTS` in `server.py`); `run_binary` enforces it so a hung scan can't pin the server.
 
 To add a tool: add a `@mcp.tool()` function with typed/`Literal` args, validate any target, and route through `run_binary`. Keep the no-passthrough invariant.
 
@@ -53,7 +54,7 @@ These are the reason the project exists. Treat them as invariants — do not rel
   - `nuclei` — `-u`, `-tags rest,api`
 - **Target allowlist (application layer):** every tool refuses any target — or any URL host — not in the hardcoded `ALLOWED_TARGETS` (`server.py`). Baked into the read-only image; URL hosts must be literal allowed IPs (never resolved).
 - **Container hardening:** base `kalilinux/kali-rolling`; run as `mcpbot` (UID 1000), root disabled; read-only root filesystem; ephemeral `tmpfs` at `/tmp` for tool output.
-- **Network:** egress restricted (iptables / Docker network) to the target API IP range only; ingress limited to port 8000; DNS hardcoded to an internal resolver to block DNS-tunneling exfiltration.
+- **Network:** egress restricted to the target API IP range only (host `DOCKER-USER` rules via `setup-egress.sh`, which reads the CIDRs from `ALLOWED_TARGETS` so the app and network layers can't drift); ingress limited to port 8000; DNS blocked/pinned to block DNS-tunneling exfiltration.
 
 The threat model assumes the LLM may be wrong or hijacked by prompt injection in a target's API response — every boundary above is there to confine the blast radius to a disposable container.
 
