@@ -219,7 +219,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 ```
 
 CI (`.github/workflows/ci.yml`) runs `py_compile`, `ruff check`, and the tests on
-every push and pull request.
+every push and pull request, and a separate job **builds the Docker image and
+verifies nuclei works under the hardened runtime** (templates baked + readable by
+the UID-1000 user, config dir writable on the read-only rootfs).
 
 ## Layout
 

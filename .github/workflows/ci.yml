@@ -28,3 +28,33 @@ jobs:
 
       - name: Tests
         run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build catches a broken image (e.g. the template bake failing) because the
+      # Dockerfile guard fails the build if no templates are present.
+      - name: Build image
+        run: docker build -t api-redbox-mcp .
+
+      # Verify nuclei is actually functional under the hardened runtime: templates
+      # baked AND readable by the UID-1000 user, and its config dir writable on the
+      # read-only rootfs (XDG_CONFIG_HOME -> tmpfs). This is the exact set of bugs
+      # that previously shipped green.
+      - name: Verify nuclei under the hardened runtime
+        run: |
+          docker run --rm --read-only --tmpfs /tmp --tmpfs /home/mcpbot/.cache \
+            --user 1000:1000 --entrypoint sh api-redbox-mcp -c '
+              count=$(find /opt/nuclei-templates -name "*.yaml" | wc -l)
+              echo "templates readable by UID 1000: $count"
+              [ "$count" -gt 0 ] || { echo "FAIL: no readable templates"; exit 1; }
+              nuclei -templates /opt/nuclei-templates -tags rest,api \
+                -u http://127.0.0.1:1/ -jsonl -silent -disable-update-check -timeout 1 \
+                >/tmp/out.txt 2>&1 || true
+              if grep -qiE "permission denied|could not create|no templates provided" /tmp/out.txt; then
+                echo "FAIL: nuclei could not initialize:"; cat /tmp/out.txt; exit 1
+              fi
+              echo "nuclei initialized OK under read-only rootfs"
+            '

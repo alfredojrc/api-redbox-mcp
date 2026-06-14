@@ -37,7 +37,7 @@ See `README.md` for the full hardened `docker run` invocation.
 - **nmap is always a connect scan** (`-sT`): `-sV` is *additive* (`-sT -sV`), never a replacement — a bare `-sV` lets nmap fall back to a SYN scan needing a raw socket the cap-dropped sandbox denies.
 - **`run_binary(cmd: list[str])` is the only execution path**: `subprocess.run` with `shell=False` and a mandatory timeout. Always invoke via an argument list, never a string.
 - Wordlists are selected by **alias** (`WORDLISTS` dict → `/opt/seclists/...`), never by caller-supplied path.
-- nuclei templates are baked into the image (`/opt/nuclei-templates`) and run with `-disable-update-check` because the runtime rootfs is read-only.
+- nuclei templates are baked into the image (`/opt/nuclei-templates`, made world-readable so the UID-1000 user can read them) and run with `-disable-update-check` because the runtime rootfs is read-only. nuclei/uncover insist on a writable config dir, so `XDG_CONFIG_HOME=/tmp/.config` points it at the tmpfs. The Dockerfile fails the build if the template bake produces nothing, and CI builds + runs the image to catch this class of regression.
 - Every tool is bounded by a per-tool timeout (`TIMEOUTS` in `server.py`); `run_binary` enforces it so a hung scan can't pin the server.
 - Tools return a structured `ScanResult` (`status`/`exit_code`/`findings`/`raw`), not raw text. `findings` is parsed from each tool's native machine format (nmap `-oX` XML, ffuf/arjun JSON, nuclei `-jsonl`) by defensive `_parse_*` helpers that yield `[]` on malformed output while keeping `raw`. `run_binary` returns an `Execution`, not a string.
 
